@@ -6,16 +6,57 @@ on:
 jobs:
   deploy-prod:
     runs-on: ubuntu-latest
+    name: Deploy to Cloudflare (Prod)
+    env:
+      # Pin tool versions to avoid upstream updates breaking CI
+      WORKER_BUILD_VERSION: "0.7.1"
+      WRANGLER_VERSION: "4.54.0"
+      # Web Vault frontend (bw_web_builds) version tag (default pinned; override via GitHub Actions Variables)
+      # - Set repository variable BW_WEB_VERSION_DEV (e.g. v2025.12.0) to override
+      # - Set to "latest" to follow the latest bw_web_builds release
+      BW_WEB_VERSION: ${{ vars.BW_WEB_VERSION || 'v2025.12.0' }}
+
+      # Required for wrangler
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Download Frontend (Bitwarden Web Vault)
         run: |
-          mkdir -p public
-          wget -q "https://github.com/dani-garcia/bw_web_builds/releases/download/v2025.12.0/bw_web_v2025.12.0.tar.gz"
-          tar -xzf "bw_web_v2025.12.0.tar.gz" -C public/
+          set -euo pipefail
+          TAG="${BW_WEB_VERSION}"
+          if [ "${TAG}" = "latest" ]; then
+            TAG="$(curl -s https://api.github.com/repos/dani-garcia/bw_web_builds/releases/latest | jq -r .tag_name)"
+          fi
+
+          echo "📦 Downloading frontend version: ${TAG}"
+
+          # Download the web vault release
+          wget -q "https://github.com/dani-garcia/bw_web_builds/releases/download/${TAG}/bw_web_${TAG}.tar.gz"
+
+          # Extract to public/web-vault
+          tar -xzf "bw_web_${TAG}.tar.gz" -C public/
+
+          # bw_web_builds extracts into a web-vault folder (expected)
+          if [ ! -d "public/web-vault" ]; then
+            echo "❌ Expected ./public/web-vault after extracting bw_web_builds" >&2
+            ls -la public/ | head -50 || true
+            exit 1
+          fi
+
+          # Remove large source maps to satisfy Cloudflare static asset per-file limits
           find public/web-vault -type f -name '*.map' -delete
-          echo "✅ Frontend UI downloaded and extracted"
+
+          # Cleanup
+          rm -f "bw_web_${TAG}.tar.gz"
+
+          echo "✅ Frontend files extracted to ./public/web-vault"
+          ls -la public/web-vault/ | head -20
+
+      - name: Apply web vault overrides (vaultwarden.css)
+        run: |
+          bash scripts/apply-web-vault-overrides.sh public/web-vault
 
       - name: Patch wrangler.toml
         run: |
@@ -39,14 +80,17 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install worker-build
-        run: cargo install worker-build --version 0.7.1
+        run: |
+          set -euo pipefail
+          if command -v worker-build &> /dev/null; then
+            echo "worker-build already installed: $(worker-build --version || true)"
+          fi
+          cargo install --locked -q worker-build --version "${WORKER_BUILD_VERSION}"
 
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "4.63.0" 
-          command: deploy
-        env:
-          DISABLE_USER_REGISTRATION: ${{ secrets.DISABLE_USER_REGISTRATION || 'false' }}
+          wranglerVersion: ${{ env.WRANGLER_VERSION }} 
+          command: deploy --env ""
