@@ -19,17 +19,21 @@ jobs:
 
       - name: Patch wrangler.toml
         run: |
-          # 1. Ganti semua kata 'vault1' menjadi 'warden-db'
-          # Ini akan mengubah 'binding' dan 'database_name' sekaligus dalam satu langkah
-          sed -i 's/vault1/warden-db/g' wrangler.toml
+          # 1. Ganti semua binding D1 (apapun namanya) menjadi "DB"
+          sed -i '/\[\[d1_namespaces\]\]/,/binding =/ s/binding = .*/binding = "DB"/' wrangler.toml
           
-          # 2. Injeksi ID Database dari Secret
-          sed -i 's/${D1_DATABASE_ID}/${{ secrets.D1_DATABASE_ID }}/g' wrangler.toml
+          # 2. Pastikan database_name menunjuk ke "warden-db"
+          sed -i 's/database_name = .*/database_name = "warden-db"/g' wrangler.toml
           
-          # 3. Sync KV Namespace ID
+          # 3. Suntikkan ID Database yang sebenarnya dari Secret
+          # Kita pastikan baris database_id diisi dengan ID asli Anda
+          sed -i 's/database_id = .*/database_id = "${{ secrets.D1_DATABASE_ID }}"/g' wrangler.toml
+          
+          # 4. Sync KV Namespace ID (seperti sebelumnya)
           sed -i '/binding = "ATTACHMENTS_KV"/a id = "${{ secrets.ATTACHMENTS_KV_ID }}"' wrangler.toml
           
-          echo "✅ All references to vault1 have been purged and replaced with warden-db"
+          echo "✅ wrangler.toml patched: Binding=DB, Name=warden-db, ID=Injected"
+          cat wrangler.toml | grep -A 5 "d1_namespaces"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
