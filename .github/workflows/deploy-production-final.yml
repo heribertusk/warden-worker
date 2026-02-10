@@ -30,10 +30,8 @@ jobs:
           sed -i 's/database_id = .*/database_id = "${{ secrets.D1_DATABASE_ID }}"/g' wrangler.toml
           
           # 4. Sync KV Namespace ID (seperti sebelumnya)
-          sed -i '/binding = "ATTACHMENTS_KV"/a id = "${{ secrets.ATTACHMENTS_KV_ID }}"' wrangler.toml
-          
+          sed -i '/binding = "ATTACHMENTS_KV"/a id = "${{ secrets.ATTACHMENTS_KV_ID }}"' wrangler.toml          
           echo "✅ wrangler.toml patched: Binding=DB, Name=warden-db, ID=Injected"
-          cat wrangler.toml | grep -A 5 "d1_namespaces"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
