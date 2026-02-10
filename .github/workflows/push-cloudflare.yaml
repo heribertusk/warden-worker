@@ -1,8 +1,8 @@
 name: Build
 
 on:
-  push:
-    branches: [main, uat, release*]
+  # push:
+    # branches: [main, uat, release*]
   workflow_dispatch:
 
 jobs:
