@@ -1,0 +1,45 @@
+name: Deploy Production Final
+
+on:
+  workflow_dispatch: 
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Frontend (Bitwarden Web Vault)
+        run: |
+          mkdir -p public
+          wget -q "https://github.com/dani-garcia/bw_web_builds/releases/download/v2025.12.0/bw_web_v2025.12.0.tar.gz"
+          tar -xzf "bw_web_v2025.12.0.tar.gz" -C public/
+          find public/web-vault -type f -name '*.map' -delete
+          echo "✅ Frontend UI downloaded and extracted"
+
+      - name: Patch wrangler.toml
+        run: |
+          # 1. Pastikan database_name sesuai dengan yang ada di dashboard Cloudflare
+          sed -i 's/database_name = "vault1"/database_name = "warden-db"/g' wrangler.toml
+          
+          # 2. Ganti binding agar sesuai dengan ekspektasi kode atau biarkan vault1 jika kode merujuk ke sana.
+          # Untuk proyek ini, kita biarkan binding-nya jika memang kode internalnya mencari 'vault1'.
+          # Namun kita pastikan placeholder ID terganti dengan Secret.
+          sed -i 's/${D1_DATABASE_ID}/${{ secrets.D1_DATABASE_ID }}/g' wrangler.toml
+          
+          echo "✅ wrangler.toml patched for warden-db"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install worker-build
+        run: cargo install worker-build --version 0.7.1
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
