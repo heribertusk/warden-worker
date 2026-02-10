@@ -19,15 +19,17 @@ jobs:
 
       - name: Patch wrangler.toml
         run: |
-          # 1. Pastikan database_name sesuai dengan yang ada di dashboard Cloudflare
+          # 1. Samakan nama database
           sed -i 's/database_name = "vault1"/database_name = "warden-db"/g' wrangler.toml
           
-          # 2. Ganti binding agar sesuai dengan ekspektasi kode atau biarkan vault1 jika kode merujuk ke sana.
-          # Untuk proyek ini, kita biarkan binding-nya jika memang kode internalnya mencari 'vault1'.
-          # Namun kita pastikan placeholder ID terganti dengan Secret.
+          # 2. Injeksi ID Database
           sed -i 's/${D1_DATABASE_ID}/${{ secrets.D1_DATABASE_ID }}/g' wrangler.toml
           
-          echo "✅ wrangler.toml patched for warden-db"
+          # 3. Sync KV Namespace ID
+          # Baris ini akan mencari binding ATTACHMENTS_KV dan menyisipkan ID tepat di bawahnya
+          sed -i '/binding = "ATTACHMENTS_KV"/a id = "${{ secrets.ATTACHMENTS_KV_ID }}"' wrangler.toml
+          
+          echo "✅ wrangler.toml is now complete with D1 and KV IDs"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -42,4 +44,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.63.0" 
           command: deploy
+        env:
+          DISABLE_USER_REGISTRATION: ${{ secrets.DISABLE_USER_REGISTRATION || 'false' }}
