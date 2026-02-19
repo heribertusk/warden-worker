@@ -60,20 +60,19 @@ jobs:
 
       - name: Patch wrangler.toml
         run: |
-          # 1. Fix typo: d1_namespaces → d1_databases
+          # 1. Fix typo: d1_namespaces → d1_databases  
           sed -i "s/d1_namespaces/d1_databases/g" wrangler.toml
           
-          # 2. Ganti database_name (production only, before env.dev)
-          sed -i "0,/\[env.dev\]/ s|database_name = \\\"vault1\\\"|database_name = \\\"\\${{ secrets.D1_DATABASE_NAME }}\\\"|" wrangler.toml
+          # 2. Replace database_name in production section only
+          sed -i "0,/\[env.dev\]/ s\|database_name = \"vault1\"\|database_name = \"${{ secrets.D1_DATABASE_NAME }}\"\|" wrangler.toml
           
-          # 3. Ganti D1_DATABASE_ID placeholder (production only)
-          sed -i "0,/\[env.dev\]/ s|\\${D1_DATABASE_ID}|\\${{ secrets.D1_DATABASE_ID }}|g" wrangler.toml
+          # 3. Replace D1_DATABASE_ID placeholder in production section only
+          sed -i "0,/\[env.dev\]/ s\|\${D1_DATABASE_ID}\|${{ secrets.D1_DATABASE_ID }}\|g" wrangler.toml
           
-          # 4. Inject KV namespace ID (before env.dev)
-          sed -i "0,/\[env.dev\]/ s|binding = \\\"ATTACHMENTS_KV\\\"|binding = \\\"ATTACHMENTS_KV\\\"\\\\n    id = \\\"\\${{ secrets.ATTACHMENTS_KV_ID }}\\\"|" wrangler.toml
+          # 4. Inject KV namespace ID in production section only
+          sed -i "/binding = \"ATTACHMENTS_KV\"/ i\    id = \"${{ secrets.ATTACHMENTS_KV_ID }}\"" wrangler.toml
           
-          echo "✅ wrangler.toml patched: Name=\\${{ secrets.D1_DATABASE_NAME }}, ID=Injected, Binding=vault1"
-
+          echo "✅ wrangler.toml patched: Name=${{ secrets.D1_DATABASE_NAME }}, ID=Injected, Binding=vault1"
       - name: Validate wrangler.toml changes
         run: |
           echo "🔍 Validating production D1 config..."
