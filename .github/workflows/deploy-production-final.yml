@@ -39,12 +39,13 @@ jobs:
       - name: Patch wrangler.toml
         run: |
           set -euo pipefail
-          # Menggunakan '|' sebagai delimiter sed agar aman jika ID mengandung '/'
+          
           sed -i "s/d1_namespaces/d1_databases/g" wrangler.toml
-          sed -i "0,/\[env.dev\]/ s|database_name = \"vault1\"|database_name = \"${{ secrets.D1_DATABASE_NAME }}\"|" wrangler.toml
-          sed -i "0,/\[env.dev\]/ s|\${D1_DATABASE_ID}|${{ secrets.D1_DATABASE_ID }}|g" wrangler.toml
-          sed -i "/binding = \"ATTACHMENTS_KV\"/ i\    id = \"${{ secrets.ATTACHMENTS_KV_ID }}\"" wrangler.toml
-          echo "✅ wrangler.toml patched successfully"
+          sed -i "/binding = \"vault1\"/,/database_id/ s/database_name = \"[^\"]*\"/database_name = \"${{ secrets.D1_DATABASE_NAME }}\"/" wrangler.toml
+          sed -i "/binding = \"vault1\"/,/database_id/ s/database_id = \"[^\"]*\"/database_id = \"${{ secrets.D1_DATABASE_ID }}\"/" wrangler.toml
+          sed -i "/binding = \"ATTACHMENTS_KV\"/a \    id = \"${{ secrets.ATTACHMENTS_KV_ID }}\"" wrangler.toml
+          
+          echo "✅ wrangler.toml patched to use vault1 with your D1 credentials."
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
