@@ -58,31 +58,38 @@ jobs:
         run: |
           set -euo pipefail
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
-          DB_NAME="${{ secrets.D1_DATABASE_NAME }}"
+          
+          # Gunakan ID Database langsung dari Secret agar tidak tergantung hasil 'sed'
+          # Cloudflare API lebih suka ID (UUID) daripada nama untuk operasi remote
+          TARGET_DB="${{ secrets.D1_DATABASE_ID }}"
+
+          echo "🚀 Running migrations against Database ID: ${TARGET_DB:0:8}..."
+
           MAX_RETRIES=10
           RETRY_COUNT=0
-
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            echo "🔄 Attempting migrations (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
-            if $WRANGLER d1 migrations apply "${DB_NAME}" --remote 2>&1 | tee migration_output.txt; then
-              echo "✅ Migrations successful"
+            # Kita panggil migrations dengan ID langsung
+            if $WRANGLER d1 migrations apply "${TARGET_DB}" --remote --yes 2>&1 | tee migration_output.txt; then
+              echo "✅ Success!"
               exit 0
             fi
 
             if grep -q "duplicate column name" migration_output.txt; then
               FAILED_MIGRATION=$(grep -oP "Migration \K[0-9]+_[a-zA-Z0-9_]+\.sql(?= failed)" migration_output.txt || true)
-              if [ -z "$FAILED_MIGRATION" ]; then
-                cat migration_output.txt
-                exit 1
-              fi
-              echo "⚠️ Marking $FAILED_MIGRATION as applied..."
-              $WRANGLER d1 execute "${DB_NAME}" --remote --command "INSERT OR IGNORE INTO d1_migrations (name) VALUES ('$FAILED_MIGRATION');"
+              if [ -z "$FAILED_MIGRATION" ]; then exit 1; fi
+              
+              echo "⚠️ Fixing duplicate: $FAILED_MIGRATION"
+              $WRANGLER d1 execute "${TARGET_DB}" --remote --command "INSERT OR IGNORE INTO d1_migrations (name) VALUES ('$FAILED_MIGRATION');"
               RETRY_COUNT=$((RETRY_COUNT + 1))
             else
+              echo "❌ Unexpected Error:"
               cat migration_output.txt
               exit 1
             fi
           done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Bootstrap D1 schema
         run: |
