@@ -69,7 +69,7 @@ jobs:
           RETRY_COUNT=0
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             # Kita panggil migrations dengan ID langsung
-            if $WRANGLER d1 migrations apply "${TARGET_DB}" --remote --yes 2>&1 | tee migration_output.txt; then
+            if $WRANGLER d1 migrations apply "${TARGET_DB}" --remote 2>&1 | tee migration_output.txt; then
               echo "✅ Success!"
               exit 0
             fi
