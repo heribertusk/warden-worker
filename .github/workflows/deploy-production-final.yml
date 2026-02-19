@@ -60,16 +60,13 @@ jobs:
           set -euo pipefail
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
           
-          # Gunakan ID Database langsung dari Secret agar tidak tergantung hasil 'sed'
-          # Cloudflare API lebih suka ID (UUID) daripada nama untuk operasi remote
-          TARGET_DB="${{ secrets.D1_DATABASE_ID }}"
+          TARGET_DB="${{ secrets.D1_DATABASE_NAME }}"
 
           echo "🚀 Running migrations against Database ID: ${TARGET_DB:0:8}..."
 
           MAX_RETRIES=10
           RETRY_COUNT=0
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            # Kita panggil migrations dengan ID langsung
             if $WRANGLER d1 migrations apply "${TARGET_DB}" --remote 2>&1 | tee migration_output.txt; then
               echo "✅ Success!"
               exit 0
