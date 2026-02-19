@@ -8,15 +8,9 @@ jobs:
     runs-on: ubuntu-latest
     name: Deploy to Cloudflare (Prod)
     env:
-      # Pin tool versions to avoid upstream updates breaking CI
       WORKER_BUILD_VERSION: "0.7.1"
       WRANGLER_VERSION: "4.54.0"
-      # Web Vault frontend (bw_web_builds) version tag (default pinned; override via GitHub Actions Variables)
-      # - Set repository variable BW_WEB_VERSION_DEV (e.g. v2025.12.0) to override
-      # - Set to "latest" to follow the latest bw_web_builds release
       BW_WEB_VERSION: ${{ vars.BW_WEB_VERSION || 'v2025.12.0' }}
-
-      # Required for wrangler
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
@@ -29,62 +23,28 @@ jobs:
           if [ "${TAG}" = "latest" ]; then
             TAG="$(curl -s https://api.github.com/repos/dani-garcia/bw_web_builds/releases/latest | jq -r .tag_name)"
           fi
-
           echo "📦 Downloading frontend version: ${TAG}"
-
-          # Download the web vault release
           wget -q "https://github.com/dani-garcia/bw_web_builds/releases/download/${TAG}/bw_web_${TAG}.tar.gz"
-
-          # Extract to public/web-vault
           tar -xzf "bw_web_${TAG}.tar.gz" -C public/
-
-          # bw_web_builds extracts into a web-vault folder (expected)
           if [ ! -d "public/web-vault" ]; then
-            echo "❌ Expected ./public/web-vault after extracting bw_web_builds" >&2
-            ls -la public/ | head -50 || true
+            echo "❌ Expected ./public/web-vault after extracting" >&2
             exit 1
           fi
-
-          # Remove large source maps to satisfy Cloudflare static asset per-file limits
           find public/web-vault -type f -name '*.map' -delete
-
-          # Cleanup
           rm -f "bw_web_${TAG}.tar.gz"
 
-          echo "✅ Frontend files extracted to ./public/web-vault"
-          ls -la public/web-vault/ | head -20
-
-      - name: Apply web vault overrides (vaultwarden.css)
-        run: |
-          bash scripts/apply-web-vault-overrides.sh public/web-vault
+      - name: Apply web vault overrides
+        run: bash scripts/apply-web-vault-overrides.sh public/web-vault
 
       - name: Patch wrangler.toml
         run: |
-          # 1. Fix typo: d1_namespaces → d1_databases  
+          set -euo pipefail
+          # Menggunakan '|' sebagai delimiter sed agar aman jika ID mengandung '/'
           sed -i "s/d1_namespaces/d1_databases/g" wrangler.toml
-          
-          # 2. Replace database_name in production section only
-          sed -i "0,/\[env.dev\]/ s\|database_name = \"vault1\"\|database_name = \"${{ secrets.D1_DATABASE_NAME }}\"\|" wrangler.toml
-          
-          # 3. Replace D1_DATABASE_ID placeholder in production section only
-          sed -i "0,/\[env.dev\]/ s\|\${D1_DATABASE_ID}\|${{ secrets.D1_DATABASE_ID }}\|g" wrangler.toml
-          
-          # 4. Inject KV namespace ID in production section only
+          sed -i "0,/\[env.dev\]/ s|database_name = \"vault1\"|database_name = \"${{ secrets.D1_DATABASE_NAME }}\"|" wrangler.toml
+          sed -i "0,/\[env.dev\]/ s|\${D1_DATABASE_ID}|${{ secrets.D1_DATABASE_ID }}|g" wrangler.toml
           sed -i "/binding = \"ATTACHMENTS_KV\"/ i\    id = \"${{ secrets.ATTACHMENTS_KV_ID }}\"" wrangler.toml
-          
-          echo "✅ wrangler.toml patched: Name=${{ secrets.D1_DATABASE_NAME }}, ID=Injected, Binding=vault1"
-      - name: Validate wrangler.toml changes
-        run: |
-          echo "🔍 Validating production D1 config..."
-          grep -A 5 "^[[d1_databases]]" wrangler.toml | head -6
-          
-          echo ""
-          echo "🔍 Validating production KV config..."
-          grep -A 2 "^[[kv_namespaces]]" wrangler.toml | head -3
-          
-          echo ""
-          echo "🔍 Checking dev config is unchanged..."
-          grep -A 5 "^\[\[env.dev.d1_databases\]\]" wrangler.toml | head -6
+          echo "✅ wrangler.toml patched successfully"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -92,117 +52,51 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install worker-build
-        run: |
-          set -euo pipefail
-          if command -v worker-build &> /dev/null; then
-              echo "worker-build already installed: $(worker-build --version || true)"
-          fi
-          cargo install --locked -q worker-build --version "${WORKER_BUILD_VERSION}"
+        run: cargo install --locked -q worker-build --version "${WORKER_BUILD_VERSION}"
 
       - name: Apply D1 database migrations
         run: |
-          set -euo pipefail  # Ensure pipe returns first non-zero exit code
+          set -euo pipefail
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
           DB_NAME="${{ secrets.D1_DATABASE_NAME }}"
-
-          # Apply migrations with retry loop to handle legacy ensure_schema columns
           MAX_RETRIES=10
           RETRY_COUNT=0
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            echo "🔄 Attempting to apply migrations (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
-
+            echo "🔄 Attempting migrations (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
             if $WRANGLER d1 migrations apply "${DB_NAME}" --remote 2>&1 | tee migration_output.txt; then
-              echo "✅ All migrations applied successfully"
+              echo "✅ Migrations successful"
               exit 0
             fi
 
-            # Check if failure is due to duplicate column (from legacy ensure_schema)
             if grep -q "duplicate column name" migration_output.txt; then
-              # Extract the migration name that failed
-              # Format: "Migration 0001_add_password_salt.sql failed with the following errors:"
-              FAILED_MIGRATION=$(grep -oP "Migration \K[0-9]+_[a-zA-Z0-9_]+\.sql(?= failed)" migration_output.txt)
+              FAILED_MIGRATION=$(grep -oP "Migration \K[0-9]+_[a-zA-Z0-9_]+\.sql(?= failed)" migration_output.txt || true)
               if [ -z "$FAILED_MIGRATION" ]; then
-                echo "❌ Detected duplicate column error, but could not identify the migration filename from output."
                 cat migration_output.txt
                 exit 1
               fi
-
-              echo "⚠️ Migration '$FAILED_MIGRATION' failed: column already exists"
-              echo "📝 Marking migration as applied..."
-
-              # Initialize d1_migrations table and mark this migration as applied
-              $WRANGLER d1 execute "${DB_NAME}" --remote --command "
-                CREATE TABLE IF NOT EXISTS d1_migrations (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT UNIQUE NOT NULL,
-                  applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-                );
-                INSERT OR IGNORE INTO d1_migrations (name) VALUES ('$FAILED_MIGRATION');
-              "
-
+              echo "⚠️ Marking $FAILED_MIGRATION as applied..."
+              $WRANGLER d1 execute "${DB_NAME}" --remote --command "INSERT OR IGNORE INTO d1_migrations (name) VALUES ('$FAILED_MIGRATION');"
               RETRY_COUNT=$((RETRY_COUNT + 1))
-              echo "🔁 Retrying remaining migrations..."
             else
-              echo "❌ Migration failed with unexpected error:"
               cat migration_output.txt
               exit 1
             fi
           done
 
-          echo "❌ Max retries ($MAX_RETRIES) exceeded"
-          exit 1
-
-      - name: Bootstrap D1 schema when database is empty
+      - name: Bootstrap D1 schema
         run: |
           set -euo pipefail
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
           DB_NAME="${{ secrets.D1_DATABASE_NAME }}"
-
-          # Capture raw wrangler output so jq parse errors don't hide the real failure.
-          set +e
-          D1_OUT="$($WRANGLER d1 execute "${DB_NAME}" --remote --command \
-            "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT IN ('d1_migrations');" \
-            --json 2>&1)"
-          D1_STATUS=$?
-          set -e
-          if [ $D1_STATUS -ne 0 ]; then
-            echo "❌ wrangler d1 execute failed (exit=$D1_STATUS). Raw output:"
-            echo "$D1_OUT"
-            exit $D1_STATUS
-          fi
-
-          TABLE_COUNT="$(printf '%s' "$D1_OUT" | jq -er 'if type=="array" and (length>0) and (.[0].results|type=="array") and (.[0].results|length>0) then (.[0].results[0].cnt // 0) else error("unexpected JSON shape") end' 2>/dev/null || true)"
-          if [ -z "${TABLE_COUNT}" ]; then
-            echo "❌ Unexpected JSON from wrangler (cannot extract table count). Raw output:"
-            echo "$D1_OUT"
-            exit 1
-          fi
-
-          echo "Existing app table count: ${TABLE_COUNT}"
-          if [ "${TABLE_COUNT}" = "0" ]; then
-            echo "🆕 Empty D1 database detected; applying sql/schema.sql..."
+          
+          # Gunakan format output text biasa untuk cek tabel agar lebih stabil daripada JQ
+          TABLE_COUNT=$($WRANGLER d1 execute "${DB_NAME}" --remote --command "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('d1_migrations');" --json | jq '.[0].results[0]["COUNT(*)"]')
+          
+          if [ "$TABLE_COUNT" = "0" ]; then
+            echo "🆕 Bootstrapping database..."
             $WRANGLER d1 execute "${DB_NAME}" --remote --file sql/schema.sql
-
-            echo "📝 Marking existing migrations as applied (schema.sql already includes them)"
-            BOOTSTRAP_SQL="$(mktemp)"
-            cat >"${BOOTSTRAP_SQL}" <<'SQL'
-          CREATE TABLE IF NOT EXISTS d1_migrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-          );
-            SQL
-              shopt -s nullglob
-              for f in migrations/*.sql; do
-                echo "INSERT OR IGNORE INTO d1_migrations (name) VALUES ('$(basename "${f}")');" >>"${BOOTSTRAP_SQL}"
-              done
-
-              $WRANGLER d1 execute "${DB_NAME}" --remote --file "${BOOTSTRAP_SQL}"
-              rm -f "${BOOTSTRAP_SQL}"
-            else
-              echo "⏭️ D1 already has tables; skipping base schema bootstrap"
-            fi
+          fi
 
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
