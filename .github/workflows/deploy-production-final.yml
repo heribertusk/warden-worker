@@ -54,12 +54,53 @@ jobs:
       - name: Install worker-build
         run: cargo install --locked -q worker-build --version "${WORKER_BUILD_VERSION}"
 
-      - name: Apply D1 database migrations
+      - name: Apply D1 database migrations (With Auto-Skip)
         run: |
           set -euo pipefail
           WRANGLER="npx --yes wrangler@${WRANGLER_VERSION}"
+          DB_NAME="${{ secrets.D1_DATABASE_NAME }}"
           
-          $WRANGLER d1 migrations apply "${{ secrets.D1_DATABASE_NAME }}" --remote
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "🔄 Mencoba apply migrasi (percobaan $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+            
+            # Simpan output ke file untuk dianalisa jika gagal
+            if $WRANGLER d1 migrations apply "$DB_NAME" --remote 2>&1 | tee migration_output.txt; then
+              echo "✅ Semua migrasi berhasil diterapkan!"
+              exit 0
+            fi
+            
+            # Cek jika errornya karena kolom sudah ada (duplicate column)
+            if grep -q "duplicate column name" migration_output.txt; then
+              # Ambil nama file SQL yang gagal dari log
+              FAILED_MIGRATION=$(grep -oP "Migration \K[0-9]+_[a-zA-Z0-9_]+\.sql(?= failed)" migration_output.txt)
+              
+              if [ -z "$FAILED_MIGRATION" ]; then
+                echo "❌ Gagal mengidentifikasi file migrasi yang error."
+                cat migration_output.txt
+                exit 1
+              fi
+              
+              echo "⚠️ File '$FAILED_MIGRATION' sudah ada di DB. Menandai sebagai 'Applied'..."
+              
+              $WRANGLER d1 execute "$DB_NAME" --remote --command "
+                CREATE TABLE IF NOT EXISTS d1_migrations (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT UNIQUE NOT NULL,
+                  applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+                );
+                INSERT OR IGNORE INTO d1_migrations (name) VALUES ('$FAILED_MIGRATION');
+              "
+              
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+            else
+              echo "❌ Terjadi error migrasi yang tidak terduga:"
+              cat migration_output.txt
+              exit 1
+            fi
+          done
 
       - name: Bootstrap D1 schema
         run: |
